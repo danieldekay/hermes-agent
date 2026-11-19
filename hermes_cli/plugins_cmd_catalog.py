@@ -783,6 +783,9 @@ def cmd_update_catalog(name: str, target: Path, sidecar: dict, console, *, inter
                     console.print(
                         f"[yellow]Plugin {result.installed_name} has new capabilities; review them with "
                         f"`hermes plugins capabilities {result.installed_name}`.[/yellow]")
+        # Report activation for the running gateway (including model-provider plugins)
+        from hermes_cli.plugins_activation import report_activation
+        report_activation(console, result.installed_name)
     return result.changed
 
 

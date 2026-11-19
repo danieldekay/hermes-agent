@@ -79,6 +79,7 @@ class _HomeLayer:
     profile ``Unknown provider`` in Desktop while the same profile worked in a terminal (#88143).
     ``stamps`` are the plugin dirs' mtimes: a directory added by ``hermes plugins install`` while the
     process runs changes them, and the next lookup imports it without a restart.
+    ``plugin_file_stamps`` tracks per-plugin file mtimes to detect updates to existing plugins.
     """
     registry: dict[str, ProviderProfile] = field(default_factory=dict)
     aliases: dict[str, str] = field(default_factory=dict)
@@ -93,6 +94,9 @@ class _HomeLayer:
     # module names of plugins whose profiles this layer already holds as plugin-host proxies: the
     # hosted path's ``sys.modules`` check, so a rescan never re-imports, re-warns or swaps proxies
     hosted: set[str] = field(default_factory=set)
+    # plugin dir name -> tuple of (mtime_ns,) for each .py file in the plugin dir; used to detect
+    # file modifications that don't change the directory mtime. Empty tuple = not yet scanned.
+    plugin_file_stamps: dict[str, tuple] = field(default_factory=dict)
 
 
 _HOME_LAYERS: dict[str, _HomeLayer] = {}
@@ -497,19 +501,71 @@ def _skipped_plugin_enabled(layer: _HomeLayer) -> bool:
 
 
 def _plugin_dir_stamps(home: Path) -> tuple:
-    """mtimes of ``plugins/`` and ``plugins/model-providers/``: they change when a child is added."""
-    def stamp(path: Path):
+    """Return a stamp tuple that changes when plugin directories or their .py files change.
+
+    The tuple contains:
+    - plugins/ directory mtime
+    - plugins/model-providers/ directory mtime
+    - For each plugin directory under model-providers/ and plugins/ (flat): a hash of all .py file mtimes
+    """
+    def dir_stamp(path: Path):
         try:
             return os.stat(path).st_mtime_ns
         except OSError:
             return None
-    return (stamp(home / "plugins"), stamp(home / "plugins" / "model-providers"))
+
+    base_stamps = (dir_stamp(home / "plugins"), dir_stamp(home / "plugins" / "model-providers"))
+    
+    # Add per-plugin file stamps for model-providers/
+    plugin_stamps = []
+    user_dir = home / "plugins" / "model-providers"
+    if user_dir.is_dir():
+        for child in sorted(user_dir.iterdir()):
+            if child.is_dir() and not child.name.startswith(("_", ".")):
+                file_stamps = _plugin_file_stamps(child)
+                if file_stamps:
+                    # Hash the file stamps to keep the tuple size manageable
+                    plugin_stamps.append(hash(file_stamps))
+    
+    # Add per-plugin file stamps for flat plugins/ dirs that declare model-provider
+    installed_dir = home / "plugins"
+    if installed_dir.is_dir():
+        for child in sorted(installed_dir.iterdir()):
+            if child.is_dir() and not child.name.startswith(("_", ".")) and child.name != "model-providers":
+                try:
+                    if _declares_model_provider_kind(child):
+                        file_stamps = _plugin_file_stamps(child)
+                        if file_stamps:
+                            plugin_stamps.append(hash(file_stamps))
+                except Exception:
+                    pass
+    
+    return base_stamps + tuple(sorted(plugin_stamps))
 
 
 def _plugin_dir_stamps_settled(stamps: tuple) -> bool:
     """Whether every stamp is at least one mtime tick away from now (either side: clock skew)."""
     now = time.time_ns()
     return all(s is None or abs(now - s) >= _PLUGIN_DIR_MTIME_TICK_NS for s in stamps)
+
+
+def _plugin_file_stamps(plugin_dir: Path) -> tuple:
+    """Return sorted mtimes of all ``.py`` files in *plugin_dir* (recursively).
+
+    Used to detect file modifications inside an existing plugin directory that don't
+    change the directory's mtime (e.g. editing ``__init__.py`` or ``client.py``).
+    """
+    try:
+        py_files = sorted(plugin_dir.rglob("*.py"))
+        stamps = []
+        for f in py_files:
+            try:
+                stamps.append(os.stat(f).st_mtime_ns)
+            except OSError:
+                pass
+        return tuple(stamps)
+    except OSError:
+        return ()
 
 
 def _user_plugins_dir() -> Path | None:
@@ -592,17 +648,76 @@ def _scan_home_layer(layer: _HomeLayer, key: str) -> None:
         if user_dir is not None:
             for child in sorted(user_dir.iterdir()):
                 if child.is_dir() and not child.name.startswith(("_", ".")):
-                    _import_plugin_dir(child, "user", home_key=key)
+                    _import_plugin_dir_with_reload_check(child, "user", layer, key)
         installed_dir = _installed_plugins_dir()
         if installed_dir is not None:
             for child in sorted(installed_dir.iterdir()):
                 if not child.is_dir() or child.name.startswith(("_", ".")) or child.name == "model-providers":
                     continue
                 if _declares_model_provider_kind(child):
-                    _import_plugin_dir(child, "user", home_key=key)
+                    _import_plugin_dir_with_reload_check(child, "user", layer, key)
     finally:
         _REGISTRATION_TARGET.reset(token)
         _discovering = prior_discovering
+
+
+def _import_plugin_dir_with_reload_check(plugin_dir: Path, source: str, layer: _HomeLayer, home_key: str) -> None:
+    """Import a plugin directory, reloading if its .py files have changed since last scan."""
+    if not (plugin_dir / "__init__.py").exists():
+        return
+    if source != "bundled" and _plugin_disabled(plugin_dir):
+        logger.debug("Skipping disabled provider plugin %s (plugins.disabled)", plugin_dir.name)
+        return
+    
+    # Check if plugin files have changed since last import
+    current_file_stamps = _plugin_file_stamps(plugin_dir)
+    previous_file_stamps = layer.plugin_file_stamps.get(plugin_dir.name)
+    module_name = _user_module_name(plugin_dir, home_key)
+    
+    if previous_file_stamps is not None and current_file_stamps != previous_file_stamps:
+        # Plugin files changed - remove old module from sys.modules to force reload
+        if module_name in sys.modules:
+            logger.debug("Provider plugin %s files changed, reloading module %s", plugin_dir.name, module_name)
+            sys.modules.pop(module_name, None)
+        # Also clear any submodules
+        for mod_name in list(sys.modules.keys()):
+            if mod_name.startswith(module_name + "."):
+                sys.modules.pop(mod_name, None)
+    
+    if source != "bundled":
+        from hermes_cli.plugin_isolation import ISOLATION_HOST, isolation_mode
+        if isolation_mode() == ISOLATION_HOST:  # the plugin's code runs in the plugin host
+            _import_hosted_plugin_dir_with_reload_check(plugin_dir, source, module_name, layer, current_file_stamps)
+            return
+    
+    _exec_plugin_module(plugin_dir, source, module_name)
+    # Update file stamps after successful import
+    layer.plugin_file_stamps[plugin_dir.name] = current_file_stamps
+
+
+def _import_hosted_plugin_dir_with_reload_check(
+    plugin_dir: Path, source: str, module_name: str, layer: _HomeLayer, current_file_stamps: tuple
+) -> None:
+    """Register a plugin's profiles as plugin-host proxies, reloading if files changed."""
+    if layer is not None and module_name in layer.hosted:
+        # Check if files changed since last import
+        previous_file_stamps = layer.plugin_file_stamps.get(plugin_dir.name)
+        if previous_file_stamps is not None and current_file_stamps != previous_file_stamps:
+            logger.debug("Hosted provider plugin %s files changed, reloading", plugin_dir.name)
+            # Remove from hosted so it gets re-imported
+            layer.hosted.discard(module_name)
+            # Remove module and submodules from sys.modules
+            if module_name in sys.modules:
+                sys.modules.pop(module_name, None)
+            for mod_name in list(sys.modules.keys()):
+                if mod_name.startswith(module_name + "."):
+                    sys.modules.pop(mod_name, None)
+        else:
+            return  # already imported and no changes
+    _import_hosted_plugin_dir(plugin_dir, source, module_name)
+    # Update file stamps after successful import
+    if layer is not None:
+        layer.plugin_file_stamps[plugin_dir.name] = current_file_stamps
 
 
 def _plugin_disabled(plugin_dir: Path) -> bool:

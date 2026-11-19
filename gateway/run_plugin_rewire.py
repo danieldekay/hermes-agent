@@ -86,12 +86,12 @@ def reload_plugins_verb(runner: Any, loop: asyncio.AbstractEventLoop) -> Callabl
     Answer: ``{"reloaded", "home", "plugins", "activations", "adapters_rewired"}``. Runs on the socket executor thread
     (discovery is blocking); the count is read on the loop AFTER the re-wire callback (FIFO), so a
     truthful "active now" reaches the caller."""
-
     def _handler(params: Optional[dict] = None) -> dict:
         from hermes_constants import get_hermes_home, hermes_home_key
         from hermes_cli.plugins import discover_plugins, get_plugin_manager
         from hermes_cli.plugins_activation import activation_summaries, dependency_blocked_summaries
         from gateway.run import _profile_runtime_scope
+        import providers
         params = params or {}
         gateway_home = Path(get_hermes_home())
         requested = Path(str(params.get("home") or gateway_home)).expanduser()
@@ -108,6 +108,8 @@ def reload_plugins_verb(runner: Any, loop: asyncio.AbstractEventLoop) -> Callabl
                  else contextlib.nullcontext())
         with scope:
             discover_plugins(force=True)
+            # Also force-reload provider plugins for this profile home
+            providers.refresh_bound_home()
             manager = get_plugin_manager()
             # A plugin that failed on a dependency this gateway booted without rides along, so the
             # enabling caller asks for the restart that loads it.
@@ -120,7 +122,6 @@ def reload_plugins_verb(runner: Any, loop: asyncio.AbstractEventLoop) -> Callabl
             rewired = None
         return {"reloaded": True, "home": str(requested), "plugins": names, "activations": activations,
                 "adapters_rewired": rewired}
-
     return _handler
 
 

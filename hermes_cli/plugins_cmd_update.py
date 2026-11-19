@@ -150,6 +150,9 @@ def _update_one_locked(name: str, target: Path, console, *, interactive: bool = 
         return False
     console.print(f"[green]✓[/green] Plugin [bold]{name}[/bold] updated.")
     console.print(f"[dim]{out}[/dim]")
+    # Report activation for the running gateway (including model-provider plugins)
+    from hermes_cli.plugins_activation import report_activation
+    report_activation(console, name)
     return True
 
 

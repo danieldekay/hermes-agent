@@ -329,6 +329,18 @@ def activation_hint(result: dict[str, Any]) -> str:
         labels: dict[str, str] = {"tools": "tools (next session)", "prompt": "system prompt (next session)",
                                   "mcp_servers": "MCP servers (next session)"}
         parts.append("deferred: " + ", ".join(labels.get(k, k) for k in sorted(deferred)))
+    # For model-provider plugins, activation summary comes from providers module, not PluginManager.
+    # If no PluginManager activation but gateway reloaded, check if it's a model-provider.
     if not parts:
+        # Check if this is a model-provider plugin that was reloaded
+        plugin_name = act.get("name") or act.get("key") or ""
+        if plugin_name:
+            try:
+                import providers
+                profile = providers.get_provider_profile(plugin_name)
+                if profile is not None:
+                    return "\n".join([*lines, f"Gateway reloaded plugins; model provider '{profile.name}' updated."])
+            except Exception:
+                pass
         return "\n".join([*lines, "Gateway reloaded plugins; nothing of this plugin needs a session or restart."])
     return "\n".join([*lines, "Gateway reloaded plugins — " + "; ".join(parts) + "."])
