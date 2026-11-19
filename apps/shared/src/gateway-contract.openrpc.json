@@ -8793,6 +8793,11 @@
             "title": "Ignore User Config",
             "type": "boolean"
           },
+          "no_fallback": {
+            "default": false,
+            "title": "No Fallback",
+            "type": "boolean"
+          },
           "skills": {
             "anyOf": [
               {

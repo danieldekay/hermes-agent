@@ -176,8 +176,10 @@ class GatewaySessionAgentMixin:
             gateway_session_key=ctx.session_key,
             session_db=getattr(runner._session_db, "_db", runner._session_db),
             # Reload from disk — do not reuse the startup snapshot.
-            # See #60955.
-            fallback_model=None if api_runtime_locked() else self._runner._refresh_fallback_model(),
+            # See #60955. A ``no_fallback`` policy pins its route: no chain is attached (the
+            # caller's own retry loop is the only fallback); every other session keeps the chain.
+            fallback_model=None if (api_runtime_locked() or bool(policy and getattr(policy, 'no_fallback', False)))
+                else self._runner._refresh_fallback_model(),
             skip_context_files=skip_context_files,
             # Keep the persona even with minimal context: soul identity is one small file.
             load_soul_identity=not bool(policy and policy.ignore_rules),
@@ -217,7 +219,10 @@ class GatewaySessionAgentMixin:
             with cache_lock:
                 cache.pop(ctx.session_key, None)
         if found.reused and agent is not None:
-            self._runner._apply_fallback_chain_to_agent(agent, None if locked else runner._refresh_fallback_model())
+            from gateway.session_policy import policy_for_source
+            reused_policy = policy_for_source(runner, ctx.source)
+            no_chain = locked or bool(reused_policy and getattr(reused_policy, 'no_fallback', False))
+            self._runner._apply_fallback_chain_to_agent(agent, None if no_chain else runner._refresh_fallback_model())
         if found.evicted is not None:
             self._release_evicted_agent(found.evicted)
         if agent is None:

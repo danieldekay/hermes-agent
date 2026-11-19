@@ -26,6 +26,12 @@ def _fallback_chain(authority, policy):
     takes its frozen explicit snapshot (never the profile); safe mode carries none."""
     if policy.safe_mode:
         return None
+    if getattr(policy, 'no_fallback', False):
+        # A ``no_fallback`` session's route is pinned by its caller (e.g. beads-worker's allowlist
+        # loop): an in-chain switch would steal the attempt from that loop and misattribute its
+        # telemetry. Nothing is inherited and nothing is re-read; the profile chain stays intact
+        # for every other session.
+        return None
     if policy.ignore_user_config:
         from hermes_cli.fallback_config import get_fallback_chain
         return get_fallback_chain(policy.config(authority)) or None
@@ -152,6 +158,9 @@ def route_runtime(policy, frozen, model, key, *, fallback=True):
     credential, walking its own fallback chain on an AuthError unless ``fallback=False`` (a session
     control asking which route the session itself runs). The one resolver an in-process turn
     (``_resolve_policy_agent_runtime``) and a managed worker (``worker_route``) share."""
+    # A ``no_fallback`` policy pins its route: the resolution-time AuthError walk is suppressed too,
+    # not just the mid-session chain (one choke point for the in-process and managed callers).
+    fallback = fallback and not getattr(policy, 'no_fallback', False)
     from hermes_cli.runtime_provider import (
         frozen_runtime_config, resolve_runtime_provider, resolve_runtime_with_fallback,
     )

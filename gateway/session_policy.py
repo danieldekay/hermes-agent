@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 CREATE_FIELDS = frozenset({'request_id', 'source', 'cwd', 'model', 'toolsets',
                            'provider', 'base_url', 'reasoning', 'max_turns', 'ignore_rules', 'api_key', 'editor',
-                           'yolo', 'safe_mode', 'ignore_user_config',
+                           'yolo', 'safe_mode', 'ignore_user_config', 'no_fallback',
                            'skills', 'checkpoints', 'accept_hooks', 'pass_session_id', 'follow_profile_config',
                            'service_tier', 'cwd_explicit', 'run_budget', 'verbose', 'row_cwd', 'client_env',
                            'client'})
@@ -317,6 +317,14 @@ class LocalSessionPolicy:
         return json.loads(self.request_json).get('pass_session_id', False)
 
     @property
+    def no_fallback(self):
+        """`HERMES_NO_FALLBACK` / session.create `no_fallback`: this session runs its pinned route
+        with NO provider fallback chain (the caller's own retry loop — e.g. beads-worker's model
+        allowlist — is the only fallback). The profile's `fallback_providers` are untouched and
+        keep serving every other session (interactive chat keeps its GLM fallback)."""
+        return json.loads(self.request_json).get('no_fallback', False)
+
+    @property
     def checkpoints_enabled(self):
         """Frozen `checkpoints.enabled` (`--checkpoints` folds into it); legacy bool form accepted."""
         section = self.config().get('checkpoints', {})
@@ -614,7 +622,7 @@ def _apply_launch_overrides(params, config):
                     _refuse('base_url', 'must be an http(s) URL without credentials, query or fragment')
             config.setdefault('model', {})[key] = value
     bad_flag = next((flag for flag in ('ignore_rules', 'yolo', 'checkpoints', 'accept_hooks', 'pass_session_id',
-                                      'follow_profile_config', 'cwd_explicit', 'verbose')
+                                      'follow_profile_config', 'cwd_explicit', 'verbose', 'no_fallback')
                      if flag in params and type(params[flag]) is not bool), None)
     if bad_flag:
         _refuse(bad_flag, 'must be a boolean')

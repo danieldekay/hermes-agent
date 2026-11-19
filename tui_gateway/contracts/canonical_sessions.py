@@ -45,6 +45,8 @@ class CanonicalCreateParams(ProfileParams):
     yolo: bool = False
     safe_mode: bool = False
     ignore_user_config: bool = False
+    # Worker-pinned route: suppress this session's fallback_providers chain only.
+    no_fallback: bool = False
     skills: list[str] | None = None
     checkpoints: bool = False
     accept_hooks: bool = False
