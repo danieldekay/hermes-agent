@@ -2819,7 +2819,7 @@ def run_one_job(
     external_owner = os.environ.get("_HERMES_CRON_EXTERNAL_WORKER") == execution_id
     if not external_owner:
         try:
-            handed_off = _launch_external_cron_worker(job)
+            handed_off = _launch_external_cron_worker(job, extra_prompt=extra_prompt)
         except Exception as handoff_error:
             # Arbitrary waiter errors must not claim dispatch failure or resend
             # a worker's notice. A recovered unknown execution is different:
@@ -3602,7 +3602,7 @@ def _wait_for_external_cron_worker(
                 pass
 
 
-def _launch_external_cron_worker(job: dict) -> bool:
+def _launch_external_cron_worker(job: dict, extra_prompt: Optional[str] = None) -> bool:
     """Launch *job* outside the managed gateway process when required.
 
     Returns ``False`` outside a managed systemd gateway (in-process path).  In
@@ -3616,6 +3616,8 @@ def _launch_external_cron_worker(job: dict) -> bool:
     this handoff, so a routed desktop fire on the managed path serialized ``multiplex_active=False``
     and built the worker environment with the launch profile's residue and no scrub (review on
     f5f88d5058). Enable it for exactly this span; the worker then re-establishes it from the payload.
+
+    ``extra_prompt``: per-run context (e.g. webhook event payload) that must survive the handoff.
     """
     execution_id = str(job["execution_id"])
     job_id = str(job["id"])
@@ -3680,6 +3682,7 @@ def _launch_external_cron_worker(job: dict) -> bool:
                     "job": job,
                     "profile_home": str(_get_hermes_home().resolve()),
                     "multiplex_active": multiplex_active,
+                    "extra_prompt": extra_prompt,
                 },
                 payload_file,
             )
@@ -3856,6 +3859,7 @@ def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
         job = payload["job"]
         profile_home = Path(payload["profile_home"]).resolve()
         execution_id = str(job["execution_id"])
+        extra_prompt = payload.get("extra_prompt")
     except Exception:
         logger.exception("Cron external worker could not load payload %s", payload_path)
         return False
@@ -3938,7 +3942,7 @@ def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
             old_external_execution = os.environ.get("_HERMES_CRON_EXTERNAL_WORKER")
             os.environ["_HERMES_CRON_EXTERNAL_WORKER"] = execution_id
             try:
-                completed = run_one_job(job, adapters=None, loop=None, verbose=False)
+                completed = run_one_job(job, adapters=None, loop=None, verbose=False, extra_prompt=extra_prompt)
                 # Successful return: the worker recorded its outcome. If it raises,
                 # retain fd 2's pathname until the waiter consumes the traceback.
                 with contextlib.suppress(OSError):
