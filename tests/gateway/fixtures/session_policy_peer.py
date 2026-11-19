@@ -88,7 +88,7 @@ async def probe(peer):
             ws = await connect()
             sockets.append(ws)
             cwd = Path(os.environ['HERMES_HOME'], source)
-            cwd.mkdir()
+            cwd.mkdir(exist_ok=True)
             params = dict(request_id=source, source=source, cwd=str(cwd), model='policy-' + source)
             if source == 'cli':
                 params['toolsets'] = ['terminal']
@@ -170,7 +170,7 @@ def main():
     url = f'http://127.0.0.1:{peer.server_port}/v1'
     os.environ.update(OPENAI_API_KEY='loopback-only', OPENAI_BASE_URL=url)
     skill = Path(os.environ['HERMES_HOME'], 'skills', 'policy-skill')
-    skill.mkdir(parents=True)
+    skill.mkdir(parents=True, exist_ok=True)
     (skill / 'SKILL.md').write_text('---\nname: policy-skill\ndescription: fixture\n---\n\nPOLICY_SKILL_BODY\n')
     Path(os.environ['HERMES_HOME'], 'config.yaml').write_text(
         f'model:\n  default: policy-default\n  provider: custom\n  base_url: {url}\n'
